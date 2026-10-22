@@ -19,22 +19,22 @@ export FZF_NAVIGATOR_DIR
 : "${FZF_NAVIGATOR_KEY:=ctrl-space}"
 
 __fzf_navigator_abspath() {
-  local path="$1"
-  if [[ -d "$path" ]]; then
-    (cd "$path" && pwd)
-  elif [[ -f "$path" ]]; then
-    local dir="${path%/*}"
-    local base="${path##*/}"
-    [[ "$dir" == "$path" ]] && dir="."
+  local target="$1"
+  if [[ -d "$target" ]]; then
+    (cd "$target" && pwd)
+  elif [[ -f "$target" ]]; then
+    local dir="${target%/*}"
+    local base="${target##*/}"
+    [[ "$dir" == "$target" ]] && dir="."
     echo "$(cd "$dir" && pwd)/$base"
   else
-    local dir="${path%/*}"
-    local base="${path##*/}"
-    [[ "$dir" == "$path" ]] && dir="."
+    local dir="${target%/*}"
+    local base="${target##*/}"
+    [[ "$dir" == "$target" ]] && dir="."
     if [[ -d "$dir" ]]; then
       echo "$(cd "$dir" && pwd)/$base"
     else
-      echo "$path"
+      echo "$target"
     fi
   fi
 }
@@ -48,13 +48,13 @@ __fzf_navigator_relpath() {
 }
 
 __fzf_navigator_tildify() {
-  local path="$1"
-  if [[ "$path" == "$HOME" ]]; then
+  local target="$1"
+  if [[ "$target" == "$HOME" ]]; then
     echo "~"
-  elif [[ "$path" == "$HOME"/* ]]; then
-    echo "~${path#$HOME}"
+  elif [[ "$target" == "$HOME"/* ]]; then
+    echo "~${target#$HOME}"
   else
-    echo "$path"
+    echo "$target"
   fi
 }
 
@@ -85,6 +85,21 @@ __fzf_navigator_nav_action() {
   else
     echo "become(echo //cd)"
   fi
+}
+
+__fzf_navigator_push_history() {
+  local dir="$1"
+  local tmpdir="$FZF_NAVIGATOR_TMPDIR"
+  local history_index=$(cat "$tmpdir/history_index")
+  local history=()
+  while IFS= read -r line; do
+    history+=("$line")
+  done < "$tmpdir/history"
+
+  echo "$dir" > "$tmpdir/lock_current_dir"
+  printf '%s\n' "${history[@]:0:$((history_index+1))}" > "$tmpdir/history"
+  echo "$dir" >> "$tmpdir/history"
+  echo "$((history_index + 1))" > "$tmpdir/history_index"
 }
 
 __fzf_navigator_is_gnu_ls() {
@@ -210,31 +225,31 @@ __fzf_navigator_reload() {
 }
 
 __fzf_navigator_is_binary() {
-  local path="$1"
+  local target="$1"
   local mime
-  mime=$(file -bL --mime-encoding "$path" 2>/dev/null)
+  mime=$(file -bL --mime-encoding "$target" 2>/dev/null)
   [[ "$mime" == "binary" ]]
 }
 
 __fzf_navigator_default_preview_file() {
-  local path="$1"
-  if __fzf_navigator_is_binary "$path"; then
+  local target="$1"
+  if __fzf_navigator_is_binary "$target"; then
     if command -v xxd &>/dev/null; then
-      xxd "$path" | head -500
+      xxd "$target" | head -500
     elif command -v hexdump &>/dev/null; then
-      hexdump -C "$path" | head -500
+      hexdump -C "$target" | head -500
     else
-      od -A x -t x1z -v "$path" | head -500
+      od -A x -t x1z -v "$target" | head -500
     fi
   elif command -v bat &>/dev/null; then
-    bat --color=always --style=plain "$path"
+    bat --color=always --style=plain "$target"
   else
-    cat "$path"
+    cat "$target"
   fi
 }
 
 __fzf_navigator_default_preview_directory() {
-  local path="$1"
+  local target="$1"
   local ls_cmd=$(__fzf_navigator_detect_ls_command)
   local cmd=$(__fzf_navigator_build_ls_cmd)
   if [[ "$ls_cmd" == "eza" ]]; then
@@ -242,7 +257,7 @@ __fzf_navigator_default_preview_directory() {
   else
     cmd="$cmd -1"
   fi
-  eval "$cmd" '"$path"'
+  eval "$cmd" '"$target"'
 }
 
 __fzf_navigator_preview() {
@@ -444,12 +459,6 @@ __fzf_navigator_info() {
 __fzf_navigator_transform_open() {
   local tmpdir="$FZF_NAVIGATOR_TMPDIR"
   local current_dir=$(cat "$tmpdir/lock_current_dir")
-
-  local history=()
-  while IFS= read -r line; do
-    history+=("$line")
-  done < "$tmpdir/history"
-  local history_index=$(cat "$tmpdir/history_index")
   local selections=()
   while IFS= read -r line; do
     selections+=("$line")
@@ -471,10 +480,7 @@ __fzf_navigator_transform_open() {
     local full_path="${current_dir%/}/$filename"
 
     if [[ -d "$full_path" ]]; then
-      echo "$full_path" > "$tmpdir/lock_current_dir"
-      printf '%s\n' "${history[@]:0:$((history_index+1))}" > "$tmpdir/history"
-      echo "$full_path" >> "$tmpdir/history"
-      echo "$((history_index + 1))" > "$tmpdir/history_index"
+      __fzf_navigator_push_history "$full_path"
       __fzf_navigator_nav_action
       return
     fi
@@ -487,8 +493,8 @@ __fzf_navigator_transform_open() {
   done
 
   local cmd="${EDITOR:-vi}"
-  for path in "${paths[@]}"; do
-    cmd="$cmd $(printf %q "$path")"
+  for target in "${paths[@]}"; do
+    cmd="$cmd $(printf %q "$target")"
   done
 
   echo "execute(printf '\\033[2J\\033[H' > /dev/tty; $cmd < /dev/tty > /dev/tty)+refresh-preview"
@@ -498,20 +504,11 @@ __fzf_navigator_transform_parent() {
   local tmpdir="$FZF_NAVIGATOR_TMPDIR"
   local current_dir=$(cat "$tmpdir/lock_current_dir")
 
-  local history=()
-  while IFS= read -r line; do
-    history+=("$line")
-  done < "$tmpdir/history"
-  local history_index=$(cat "$tmpdir/history_index")
-
   local parent=$(dirname "$current_dir")
   parent=$(__fzf_navigator_abspath "$parent")
 
   if [[ "$parent" != "$current_dir" ]]; then
-    echo "$parent" > "$tmpdir/lock_current_dir"
-    printf '%s\n' "${history[@]:0:$((history_index+1))}" > "$tmpdir/history"
-    echo "$parent" >> "$tmpdir/history"
-    echo "$((history_index + 1))" > "$tmpdir/history_index"
+    __fzf_navigator_push_history "$parent"
     __fzf_navigator_nav_action
   else
     echo "ignore"
@@ -559,15 +556,7 @@ __fzf_navigator_transform_session_start() {
   local session_start_dir=$(cat "$tmpdir/session_start_dir")
 
   if [[ "$session_start_dir" != "$current_dir" ]]; then
-    local history=()
-    while IFS= read -r line; do
-      history+=("$line")
-    done < "$tmpdir/history"
-    local history_index=$(cat "$tmpdir/history_index")
-    echo "$session_start_dir" > "$tmpdir/lock_current_dir"
-    printf '%s\n' "${history[@]:0:$((history_index+1))}" > "$tmpdir/history"
-    echo "$session_start_dir" >> "$tmpdir/history"
-    echo "$((history_index + 1))" > "$tmpdir/history_index"
+    __fzf_navigator_push_history "$session_start_dir"
     __fzf_navigator_nav_action
   else
     echo "ignore"
@@ -577,18 +566,10 @@ __fzf_navigator_transform_session_start() {
 __fzf_navigator_transform_go_home() {
   local tmpdir="$FZF_NAVIGATOR_TMPDIR"
   local current_dir=$(cat "$tmpdir/lock_current_dir")
-  local history=()
-  while IFS= read -r line; do
-    history+=("$line")
-  done < "$tmpdir/history"
-  local history_index=$(cat "$tmpdir/history_index")
   local home_dir="$HOME"
 
   if [[ "$home_dir" != "$current_dir" ]]; then
-    echo "$home_dir" > "$tmpdir/lock_current_dir"
-    printf '%s\n' "${history[@]:0:$((history_index+1))}" > "$tmpdir/history"
-    echo "$home_dir" >> "$tmpdir/history"
-    echo "$((history_index + 1))" > "$tmpdir/history_index"
+    __fzf_navigator_push_history "$home_dir"
     __fzf_navigator_nav_action
   else
     echo "ignore"
@@ -598,18 +579,10 @@ __fzf_navigator_transform_go_home() {
 __fzf_navigator_transform_go_to_root() {
   local tmpdir="$FZF_NAVIGATOR_TMPDIR"
   local current_dir=$(cat "$tmpdir/lock_current_dir")
-  local history=()
-  while IFS= read -r line; do
-    history+=("$line")
-  done < "$tmpdir/history"
-  local history_index=$(cat "$tmpdir/history_index")
   local root_dir="/"
 
   if [[ "$root_dir" != "$current_dir" ]]; then
-    echo "$root_dir" > "$tmpdir/lock_current_dir"
-    printf '%s\n' "${history[@]:0:$((history_index+1))}" > "$tmpdir/history"
-    echo "$root_dir" >> "$tmpdir/history"
-    echo "$((history_index + 1))" > "$tmpdir/history_index"
+    __fzf_navigator_push_history "$root_dir"
     __fzf_navigator_nav_action
   else
     echo "ignore"
@@ -680,15 +653,7 @@ __fzf_navigator_transform_cancel() {
   local initial_dir=$(cat "$tmpdir/lock_initial_dir")
 
   if [[ "$current_dir" != "$initial_dir" ]]; then
-    local history=()
-    while IFS= read -r line; do
-      history+=("$line")
-    done < "$tmpdir/history"
-    local history_index=$(cat "$tmpdir/history_index")
-    echo "$initial_dir" > "$tmpdir/lock_current_dir"
-    printf '%s\n' "${history[@]:0:$((history_index+1))}" > "$tmpdir/history"
-    echo "$initial_dir" >> "$tmpdir/history"
-    echo "$((history_index + 1))" > "$tmpdir/history_index"
+    __fzf_navigator_push_history "$initial_dir"
     __fzf_navigator_nav_action
   else
     echo "become(echo //esc)"
@@ -728,20 +693,54 @@ __fzf_navigator_transform_open_and_exit() {
   fi
 }
 
+__fzf_navigator_transform_copy() {
+  local tmpdir="$FZF_NAVIGATOR_TMPDIR"
+  local current_dir=$(cat "$tmpdir/lock_current_dir")
+  local paths=()
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local filename=$(__fzf_navigator_extract_filename "$line")
+    paths+=("$(__fzf_navigator_abspath "${current_dir%/}/$filename")")
+  done
+
+  if [[ ${#paths[@]} -eq 0 ]]; then
+    echo "ignore"
+    return
+  fi
+
+  local all_paths=$(printf '%s\n' "${paths[@]}")
+  if command -v wl-copy &> /dev/null; then
+    printf '%s' "$all_paths" | wl-copy
+  elif command -v xclip &> /dev/null; then
+    printf '%s' "$all_paths" | xclip -selection clipboard
+  elif command -v pbcopy &> /dev/null; then
+    printf '%s' "$all_paths" | pbcopy
+  fi
+
+  if [[ ${#paths[@]} -eq 1 ]]; then
+    echo "change-footer(Copied 1 path)"
+  else
+    echo "change-footer(Copied ${#paths[@]} paths)"
+  fi
+}
+
 __fzf_navigator_parse_bindings() {
   # Store bindings as newline-delimited "action:key" pairs
-  local bindings="open:space
+  local bindings="open:enter
 open_and_exit:ctrl-o
-exit:ctrl-space
-insert_selection:enter
-copy_selection:ctrl-y
+exit:space
+insert_selection:ctrl-v
+copy_selection:ctrl-c
 cancel:esc
-go_to_parent:ctrl-d
-go_back:ctrl-alt-o
-go_forward:ctrl-alt-i
-go_to_session_start:[
-go_home:\\
-go_to_root:/
+go_to_parent:bspace
+go_to_parent:ctrl-bspace
+go_back:alt-b
+go_back:alt-left
+go_forward:alt-f
+go_forward:alt-right
+go_to_session_start:alt-s
+go_home:alt-~
+go_to_root:alt-/
 toggle_locked:ctrl-l
 toggle_hidden_files:alt-h
 toggle_file_details:ctrl-g
@@ -815,6 +814,63 @@ toggle_help:?"
   while IFS= read -r line; do
     [[ -n "$line" ]] && printf '%s\n' "$line"
   done <<< "$bindings"
+}
+
+__fzf_navigator_build_bind() {
+  local action="$1"
+  local key="$2"
+  local bind_str=""
+  case "$action" in
+    open)
+      bind_str="${key}:transform(printf '%s\\n' {+} | bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_open')"
+      ;;
+    open_and_exit)
+      bind_str="${key}:transform(printf '%s\\n' {+} | bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_open_and_exit')"
+      ;;
+    go_to_parent)
+      bind_str="${key}:transform([ -n {q} ] && echo backward-delete-char || bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_parent')"
+      ;;
+    go_back)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_back')"
+      ;;
+    go_forward)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_forward')"
+      ;;
+    go_to_session_start)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_session_start')"
+      ;;
+    go_home)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_go_home')"
+      ;;
+    go_to_root)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_go_to_root')"
+      ;;
+    toggle_locked)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_locked')"
+      ;;
+    toggle_hidden_files)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_hidden')"
+      ;;
+    toggle_file_details)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_details')"
+      ;;
+    toggle_recent_first)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_recent_first')"
+      ;;
+    cancel)
+      bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_cancel')"
+      ;;
+    copy_selection)
+      bind_str="${key}:transform(printf '%s\\n' {+} | bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_copy')"
+      ;;
+    insert_selection)
+      bind_str="${key}:become(echo //insert; cat {+f})"
+      ;;
+    exit)
+      bind_str="${key}:become(echo //exit)"
+      ;;
+  esac
+  printf '%s' "$bind_str"
 }
 
 __fzf_navigator_save_state() {
@@ -937,60 +993,11 @@ __fzf_navigator() {
   local bind_str=""
 
   while IFS=: read -r action key; do
-    bind_str=""
-    case "$action" in
-      open)
-        bind_str="${key}:transform(printf '%s\\n' {+} | bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_open')"
-        ;;
-      open_and_exit)
-        bind_str="${key}:transform(printf '%s\\n' {+} | bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_open_and_exit')"
-        ;;
-      go_to_parent)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_parent')"
-        ;;
-      go_back)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_back')"
-        ;;
-      go_forward)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_forward')"
-        ;;
-      go_to_session_start)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_session_start')"
-        ;;
-      go_home)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_go_home')"
-        ;;
-      go_to_root)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_go_to_root')"
-        ;;
-      toggle_locked)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_locked')"
-        ;;
-      toggle_hidden_files)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_hidden')"
-        ;;
-      toggle_file_details)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_details')"
-        ;;
-      toggle_recent_first)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_toggle_recent_first')"
-        ;;
-      cancel)
-        bind_str="${key}:transform(bash -c 'source \"\$FZF_NAVIGATOR_DIR/fzf-navigator.sh\"; __fzf_navigator_transform_cancel')"
-        ;;
-      copy_selection)
-        bind_str="${key}:become(echo //copy; cat {+f})"
-        ;;
-      insert_selection)
-        bind_str="${key}:become(echo //insert; cat {+f})"
-        ;;
-      exit)
-        bind_str="${key}:become(echo //exit)"
-        ;;
-      toggle_help)
-        help_key="${key}"
-        ;;
-    esac
+    if [[ "$action" == "toggle_help" ]]; then
+      help_key="${key}"
+      continue
+    fi
+    bind_str=$(__fzf_navigator_build_bind "$action" "$key")
     [[ -n "$bind_str" ]] && fzf_bindings+=("--bind" "$bind_str")
   done < <(bash -c 'source "$FZF_NAVIGATOR_DIR/fzf-navigator.sh"; __fzf_navigator_parse_bindings')
 
@@ -1071,23 +1078,6 @@ __fzf_navigator() {
     printf '\033[2J\033[H'
     ${EDITOR:-vi} "${paths[@]}"
     __FZF_NAV_SCREEN_CLEARED=1
-  elif [[ "$selection" == //copy* ]]; then
-    local selections="${selection#//copy$'\n'}"
-    local dir=$(cat "$tmpdir/lock_current_dir")
-    local paths=()
-    while IFS= read -r line; do
-      local filename=$(__fzf_navigator_extract_filename "$line")
-      local abs_path=$(__fzf_navigator_abspath "$dir/$filename")
-      paths+=("$(printf '%q' "$abs_path")")
-    done <<< "$selections"
-    local all_paths="${paths[*]}"
-    if command -v wl-copy &> /dev/null; then
-      printf '%s' "$all_paths" | wl-copy
-    elif command -v xclip &> /dev/null; then
-      printf '%s' "$all_paths" | xclip -selection clipboard
-    elif command -v pbcopy &> /dev/null; then
-      printf '%s' "$all_paths" | pbcopy
-    fi
   elif [[ "$selection" == //insert* ]]; then
     local selections="${selection#//insert$'\n'}"
     local dir=$(cat "$tmpdir/lock_current_dir")
